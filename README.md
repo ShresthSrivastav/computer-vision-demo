@@ -1,27 +1,44 @@
 # Vision Studio
 
-A guided computer-vision lab for exploring how pretrained models interpret images. Try image classification, object detection, semantic segmentation, and OCR on bundled examples or your own photos.
+Vision Studio is a small, CPU-first computer-vision project workbench. Upload a labeled image dataset, choose a transfer-learning model, train a classifier, and inspect its held-out test results. It is designed for learning and portfolio demos, not for safety-critical or always-on production workloads.
 
-## Try the app
+## Workflow
 
-**Deploy the live demo:** In Streamlit Community Cloud, create an app from this repository's `main` branch and set `app.py` as the entrypoint. Add the app URL here after deployment.
+1. Upload a ZIP of labeled images.
+2. Choose MobileNetV3-Small or ResNet18, plus a few training settings.
+3. Train a new classification head over a frozen ImageNet feature extractor.
+4. Review the validation-selected checkpoint's test metrics, learning curves, per-class scores, confusion matrix, and test predictions.
+5. Download the state-dictionary model, JSON report, and CSV predictions, or try the model on new images.
 
-The public app processes images in its active session and does not save uploads or results. It runs inference on CPU; the first use of a TorchVision task downloads that model's pretrained weights, so the first run can take longer. OCR model files are bundled with RapidOCR.
+This release focuses on **supervised image classification**. Object detection and segmentation require bounding-box or pixel-mask annotations and are not part of this training workflow.
 
-## Features
+## Dataset format
 
-- **Image classification:** rank the top ImageNet categories with confidence scores.
-- **Object detection:** draw boxes for detected COCO objects and adjust the confidence threshold.
-- **Semantic segmentation:** inspect a colored pixel mask for 20 VOC foreground categories plus background.
-- **OCR:** recognize printed text, show text boxes and line confidence, and download TXT or CSV results.
-- Download annotated images, masks, prediction tables, or recognized text.
-- Use JPEG, PNG, or WebP files up to 10 MB and 12 million pixels.
+Put each class of images in a folder named for its label, then zip the folders. An optional outer folder is accepted.
 
-The models are educational examples. Scores are not guarantees; unsupported objects, handwriting, blur, unusual layouts, and domain-specific images may produce poor results.
+```text
+dataset.zip
+├── cats/
+│   ├── cat_001.jpg
+│   └── ...
+└── dogs/
+    ├── dog_001.jpg
+    └── ...
+```
+
+JPEG, PNG, and WebP are accepted. Each archive needs 2–15 classes, at least 5 valid images per class, and no more than 250 images total. The upload is limited to 25 MB compressed, 80 MB uncompressed, and 5 MB per image (12 million pixels per image). Do not upload pre-made `train`, `validation`, or `test` directories; the app creates a deterministic, stratified 70/15/15 split so every class appears in each split. Corrupt images are skipped and listed.
+
+The included **Download a tiny example dataset** action creates a synthetic circles-versus-triangles ZIP, so the workflow can be tried without preparing images.
+
+## Models and evaluation
+
+Both choices use TorchVision's ImageNet-1K pretrained weights and train only a new classification head. MobileNetV3-Small is the smaller, faster CPU option; ResNet18 is a larger baseline. The best epoch is chosen using validation loss. The held-out test split is evaluated at the end and reports accuracy, balanced accuracy, macro precision/recall/F1, per-class scores, and a confusion matrix. A small or unrepresentative dataset can produce misleading results; use a larger independent test dataset before relying on a model.
+
+The downloadable `.pt` file contains the model architecture name, class labels, preprocessing metadata, and PyTorch state dictionary. It does not include uploaded images. The JSON report and CSV contain dataset filename, metrics, and test prediction filenames, but no image bytes.
 
 ## Run locally
 
-Use Python 3.12, then create an environment and install the pinned CPU dependencies:
+Use Python 3.12. Create a virtual environment and install the pinned dependencies, including CPU-only PyTorch wheels:
 
 ```powershell
 python -m venv .venv
@@ -30,43 +47,33 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Run the test suite:
+Run the automated checks:
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-Run all four real pretrained models against the bundled samples (downloads TorchVision weights on first use):
+Run one real pretrained CPU training epoch using the generated dataset (downloads MobileNetV3-Small weights on first use):
 
 ```powershell
-python scripts/smoke_models.py
+python scripts/smoke_training.py
 ```
 
-## Models and attribution
+## Deploy on Streamlit Community Cloud
 
-| Task | Model | Labels / training set |
-| --- | --- | --- |
-| Classification | TorchVision MobileNetV3-Small | ImageNet-1K |
-| Detection | TorchVision Faster R-CNN MobileNetV3-Large 320 FPN | COCO |
-| Segmentation | TorchVision LRASPP MobileNetV3-Large | COCO images with Pascal VOC labels |
-| OCR | RapidOCR PP-OCRv6 small | Printed text; multilingual model |
+1. Create a Streamlit Community Cloud app from this repository's `main` branch.
+2. Set `app.py` as the app entry point.
+3. Deploy. Pushes to `main` can trigger a rebuild; the first model run downloads TorchVision weights.
 
-Torch and TorchVision source code use BSD-3-Clause. Model weights and their training datasets can have separate terms; review the upstream model and dataset terms before reuse beyond this learning demo. RapidOCR is Apache-2.0 and documents its model sources and licenses in its project repository.
+The public app processes uploads in its active session memory and does not write the dataset, trained weights, predictions, or report to persistent storage. Keep uploads modest: free hosting uses shared resources, and CPU training can be slow for larger datasets. Streamlit says resource limits are approximate and may change; apps can hibernate after 12 hours without traffic. This portfolio demo has no uptime guarantee. See [Streamlit Community Cloud resources and hibernation](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app).
 
-- [TorchVision model weights](https://docs.pytorch.org/vision/stable/models.html)
-- [TorchVision license](https://github.com/pytorch/vision/blob/main/LICENSE)
-- [RapidOCR installation and bundled models](https://github.com/RapidAI/RapidOCRDocs/blob/main/docs/install_usage/rapidocr/install.en.md)
-- [RapidOCR model notices](https://github.com/RapidAI/RapidOCR/blob/main/MODEL_LICENSES.md)
-- The Golden Retriever sample is CC0 from [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Golden-retriever-dog.jpg); the OCR sample card was generated for this project.
+## Model attribution
 
-See [assets/ATTRIBUTION.md](assets/ATTRIBUTION.md) for sample-image details.
+- **MobileNetV3-Small** and **ResNet18** architectures and ImageNet-1K weights are provided by TorchVision. See [TorchVision models and weight metadata](https://docs.pytorch.org/vision/stable/models.html) and the [TorchVision BSD-3-Clause license](https://github.com/pytorch/vision/blob/main/LICENSE).
+- The example circles and triangles are generated in memory for this app and do not use external images.
 
-## Deployment
+Review upstream model and dataset terms before using trained models beyond learning or prototyping. This app does not guarantee model accuracy or suitability for any particular task.
 
-The app is configured for Streamlit Community Cloud and Python 3.12. Create an app from this public repository with `app.py` as the entrypoint and the `main` branch as its source. Community Cloud can redeploy when commits are pushed to that branch.
+## Privacy and limits
 
-Community Cloud is a free portfolio host, not an always-on service. Streamlit documents approximate CPU and memory limits that can change, and apps can hibernate after 12 hours without traffic. First visits after hibernation and first model runs can be slow. See [Community Cloud app resources and limits](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app).
-
-## Privacy
-
-Uploaded images are validated and held in the app's active session for inference. The app does not write image uploads or results to disk, a database, or an external inference provider, and it does not log image content. Pretrained TorchVision weights are downloaded from the official PyTorch host on first use. The app is public; do not upload sensitive images.
+Dataset ZIPs and prediction images are validated and held in the active Streamlit session while the app runs. The app does not extract archives to disk, save uploads to a database, send images to an inference provider, or log image content. PyTorch's pretrained weights may be downloaded from the official PyTorch host on first training. The repository and app are public; do not upload sensitive images.

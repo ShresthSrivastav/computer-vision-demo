@@ -7,430 +7,336 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
-from PIL import Image
 
 from vision import (
-    TASK_CLASSIFICATION,
-    TASK_DETECTION,
-    TASK_OCR,
-    TASK_SEGMENTATION,
-    ImageValidationError,
-    build_model,
-    classify,
-    detect,
-    draw_detection_overlay,
-    draw_ocr_overlay,
-    draw_segmentation_mask,
-    draw_segmentation_overlay,
-    image_digest,
-    png_bytes,
-    recognize_text,
+    ARCHITECTURES,
+    DatasetValidationError,
+    demo_dataset_zip,
+    json_bytes,
+    model_artifact_bytes,
+    parse_dataset_zip,
+    predict_images,
     rows_to_csv,
     safe_download_stem,
-    segment,
-    validate_image,
+    split_dataset,
+    train_classifier,
 )
 
 LOGGER = logging.getLogger("vision_studio")
-APP_DIR = Path(__file__).parent
-ASSET_DIR = APP_DIR / "assets"
-RESULT_KEY = "vision_studio_result"
+DATASET_KEY = "vision_studio_dataset"
+ERROR_KEY = "vision_studio_dataset_error"
+RESULT_KEY = "vision_studio_training_result"
 UPLOAD_VERSION_KEY = "vision_studio_upload_version"
 
-TASK_DESCRIPTIONS = {
-    TASK_CLASSIFICATION: (
-        "What is most likely in this image? The model ranks ImageNet classes;"
-        " these scores are relative model confidence, not calibrated probabilities."
-    ),
-    TASK_DETECTION: (
-        "Where are familiar objects? Adjust the confidence threshold to filter boxes."
-        " The detector recognizes the 80 COCO object classes."
-    ),
-    TASK_SEGMENTATION: (
-        "Which pixels belong to each scene category? This lightweight model predicts"
-        " 20 foreground VOC categories plus background."
-    ),
-    TASK_OCR: (
-        "Find and read visible text. The bundled RapidOCR model is tuned for printed"
-        " text; results can be weaker on handwriting, blur, or unusual layouts."
-    ),
-}
+
+def clear_workspace() -> None:
+    version = int(st.session_state.get(UPLOAD_VERSION_KEY, 0)) + 1
+    for key in (
+        DATASET_KEY, ERROR_KEY, RESULT_KEY, "vision_studio_dataset_signature", "vision_studio_dataset_name",
+        "vision_studio_training_signature", "vision_studio_training_settings",
+        "vision_studio_new_prediction_signature", "vision_studio_new_predictions",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state[UPLOAD_VERSION_KEY] = version
 
 
-@st.cache_resource(max_entries=1, show_spinner=False)
-def cached_model(task: str) -> Any:
-    return build_model(task)
-
-
-def clear_session_upload() -> None:
-    version = int(st.session_state.get(UPLOAD_VERSION_KEY, 0))
-    st.session_state.pop(f"vision_upload_{version}", None)
-    st.session_state.pop(RESULT_KEY, None)
-    st.session_state[UPLOAD_VERSION_KEY] = version + 1
-
-
-def result_signature(task: str, raw: bytes, settings: dict[str, Any]) -> str:
-    payload = json.dumps(settings, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(task.encode() + raw + payload).hexdigest()
-
-
-def load_source_image() -> tuple[Image.Image | None, bytes, str, str]:
-    st.sidebar.markdown("### Image source")
-    source = st.sidebar.radio(
-        "Choose an image",
-        ("Sample gallery", "Upload an image"),
-        label_visibility="collapsed",
-    )
-
-    if source == "Sample gallery":
-        samples = {
-            "Golden retriever": (ASSET_DIR / "golden_retriever.jpg", "A public-domain dog photograph."),
-            "Printed text card": (ASSET_DIR / "ocr_sample.png", "A high-contrast OCR sample generated for this project."),
-        }
-        choice = st.sidebar.selectbox("Sample image", tuple(samples))
-        path, description = samples[choice]
-        raw = path.read_bytes()
-        name = path.name
-    else:
-        version = int(st.session_state.get(UPLOAD_VERSION_KEY, 0))
-        uploaded = st.sidebar.file_uploader(
-            "Choose a JPEG, PNG, or WebP",
-            type=("jpg", "jpeg", "png", "webp"),
-            max_upload_size=10,
-            key=f"vision_upload_{version}",
-            help="Up to 10 MB. Images are processed in memory and are not saved.",
-        )
-        if uploaded is None:
-            return None, b"", "", "Choose an image to begin."
-        raw = uploaded.getvalue()
-        name = uploaded.name
-        description = "Your upload is held in this app session only."
-
-    try:
-        image = validate_image(raw)
-    except ImageValidationError as exc:
-        return None, raw, name, str(exc)
-    return image, raw, name, description
-
-
-def run_task(task: str, bundle: Any, image: Image.Image, settings: dict[str, Any]) -> dict[str, Any]:
-    if task == TASK_CLASSIFICATION:
-        return {"predictions": classify(bundle, image, settings["top_k"])}
-    if task == TASK_DETECTION:
-        detections = detect(bundle, image, settings["threshold"])
-        return {"detections": detections, "overlay": draw_detection_overlay(image, detections)}
-    if task == TASK_SEGMENTATION:
-        mask, regions = segment(bundle, image)
-        return {
-            "regions": regions,
-            "overlay": draw_segmentation_overlay(image, mask),
-            "mask_image": draw_segmentation_mask(mask),
-        }
-    lines = recognize_text(bundle, image)
-    return {"lines": lines, "overlay": draw_ocr_overlay(image, lines)}
-
-
-def render_classification(result: dict[str, Any], filename: str) -> None:
-    predictions = result["predictions"]
-    best = predictions[0]
-    left, right = st.columns([1.35, 1])
-    with left:
-        st.markdown("#### Ranked predictions")
-        for row in predictions:
-            st.markdown(f"**{row['rank']:02d} · {row['label']}** · {row['confidence']:.1%}")
-            st.progress(row["confidence"])
-    with right:
-        st.markdown("#### Leading class")
-        st.metric(best["label"], f"{best['confidence']:.1%}")
-        st.caption("Scores rank this model’s alternatives. They are not a guarantee that the image contains the class.")
-        st.download_button(
-            "Download predictions · CSV",
-            rows_to_csv(("rank", "class", "confidence"), ((r["rank"], r["label"], r["confidence"]) for r in predictions)),
-            file_name=f"{Path(filename).stem}_classification.csv",
-            mime="text/csv",
-            key="download_classification",
-            width="stretch",
-        )
-
-
-def render_detection(result: dict[str, Any], filename: str) -> None:
-    detections = result["detections"]
-    if not detections:
-        st.info("No objects were found above this confidence threshold. Try lowering it or choosing another image.")
-    else:
-        st.markdown(f"#### {len(detections)} object{'' if len(detections) == 1 else 's'} found")
-    st.image(result["overlay"], caption="Predictions from the COCO-trained detector", width="stretch")
-    if detections:
-        st.dataframe(
-            [
-                {
-                    "Object": item["label"],
-                    "Confidence": f"{item['confidence']:.1%}",
-                    "Box (left, top, right, bottom)": ", ".join(f"{v:.0f}" for v in item["box"]),
-                }
-                for item in detections
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-    left, right = st.columns(2)
-    with left:
-        st.download_button(
-            "Download annotated image · PNG",
-            png_bytes(result["overlay"]),
-            file_name=f"{Path(filename).stem}_detections.png",
-            mime="image/png",
-            key="download_detections_image",
-            width="stretch",
-        )
-    with right:
-        st.download_button(
-            "Download detections · CSV",
-            rows_to_csv(
-                ("class", "confidence", "left", "top", "right", "bottom"),
-                ((d["label"], d["confidence"], *[round(v, 2) for v in d["box"]]) for d in detections),
-            ),
-            file_name=f"{Path(filename).stem}_detections.csv",
-            mime="text/csv",
-            key="download_detections_csv",
-            width="stretch",
-        )
-
-
-def render_segmentation(result: dict[str, Any], filename: str) -> None:
-    left, right = st.columns(2)
-    with left:
-        st.image(result["overlay"], caption="Semantic regions overlaid on the source image", width="stretch")
-    with right:
-        st.image(result["mask_image"], caption="Color mask · background is transparent in the overlay", width="stretch")
-    regions = result["regions"]
-    if not regions:
-        st.info("The model assigned all pixels to background for this image.")
-    else:
-        st.markdown("#### Largest regions")
-        st.dataframe(
-            [
-                {"Category": row["label"], "Image area": f"{row['share']:.1%}", "Pixels": row["pixels"]}
-                for row in regions[:10]
-            ],
-            hide_index=True,
-            width="stretch",
-        )
-    left, right = st.columns(2)
-    with left:
-        st.download_button(
-            "Download overlay · PNG",
-            png_bytes(result["overlay"]),
-            file_name=f"{Path(filename).stem}_segmentation_overlay.png",
-            mime="image/png",
-            key="download_segmentation_overlay",
-            width="stretch",
-        )
-    with right:
-        st.download_button(
-            "Download class mask · PNG",
-            png_bytes(result["mask_image"]),
-            file_name=f"{Path(filename).stem}_segmentation_mask.png",
-            mime="image/png",
-            key="download_segmentation_mask",
-            width="stretch",
-        )
-
-
-def render_ocr(result: dict[str, Any], filename: str) -> None:
-    lines = result["lines"]
-    st.image(result["overlay"], caption="Detected text regions and recognition confidence", width="stretch")
-    if not lines:
-        st.info("No readable text was found. Try a sharper image with larger, well-lit printed text.")
+def set_dataset(raw: bytes, filename: str) -> None:
+    signature = hashlib.sha256(raw).hexdigest()
+    if signature == st.session_state.get("vision_studio_dataset_signature"):
+        st.session_state["vision_studio_dataset_name"] = filename
         return
-    st.markdown("#### Recognized text")
-    st.code("\n".join(line["text"] for line in lines), language=None, wrap_lines=True)
-    st.dataframe(
-        [{"Text": line["text"], "Confidence": f"{line['confidence']:.1%}"} for line in lines],
-        hide_index=True,
-        width="stretch",
+    st.session_state.pop(RESULT_KEY, None)
+    st.session_state["vision_studio_dataset_signature"] = signature
+    st.session_state["vision_studio_dataset_name"] = filename
+    try:
+        st.session_state[DATASET_KEY] = parse_dataset_zip(raw)
+        st.session_state.pop(ERROR_KEY, None)
+    except DatasetValidationError as exc:
+        st.session_state.pop(DATASET_KEY, None)
+        st.session_state[ERROR_KEY] = str(exc)
+
+
+def render_results(run: dict[str, Any], settings: dict[str, Any], dataset_name: str) -> None:
+    metrics = run["metrics"]
+    st.divider()
+    st.markdown("## Evaluation results")
+    st.caption(
+        f"Best checkpoint selected by validation loss · measured once on the held-out test split · "
+        f"{run['test_size']} test images · {run['elapsed']:.1f}s total training time"
     )
-    left, right = st.columns(2)
+    cards = st.columns(4)
+    for column, label, value, help_text in zip(
+        cards,
+        ("Test accuracy", "Balanced accuracy", "Macro F1", "Test loss"),
+        (metrics["accuracy"], metrics["balanced_accuracy"], metrics["macro_f1"], run["test_loss"]),
+        (
+            "Share of all test predictions that are correct.",
+            "Average recall across classes; useful when classes have different sizes.",
+            "Average class-level F1 score, treating each class equally.",
+            "Cross-entropy on the held-out test images.",
+        ),
+    ):
+        column.metric(label, f"{value:.1%}" if label != "Test loss" else f"{value:.3f}", help=help_text)
+
+    left, right = st.columns(2, gap="large")
     with left:
-        st.download_button(
-            "Download recognized text · TXT",
-            "\n".join(line["text"] for line in lines).encode("utf-8"),
-            file_name=f"{Path(filename).stem}_text.txt",
-            mime="text/plain; charset=utf-8",
-            key="download_ocr_text",
-            width="stretch",
-        )
+        st.markdown("### Learning curves")
+        history = pd.DataFrame(run["history"]).set_index("epoch")
+        st.line_chart(history[["train_accuracy", "validation_accuracy"]], y_label="Accuracy", x_label="Epoch")
+        st.line_chart(history[["train_loss", "validation_loss"]], y_label="Loss", x_label="Epoch")
     with right:
+        st.markdown("### Confusion matrix")
+        matrix = pd.DataFrame(run["metrics"]["confusion_matrix"], index=run["labels"], columns=run["labels"])
+        matrix.index.name = "Actual ↓  /  Predicted →"
+        st.dataframe(matrix, width="stretch")
+        st.caption("Rows are actual classes; columns are model predictions.")
+
+    st.markdown("### Per-class test scores")
+    class_frame = pd.DataFrame(run["metrics"]["per_class"]).rename(
+        columns={"class": "Class", "precision": "Precision", "recall": "Recall", "f1": "F1", "support": "Test images"}
+    )
+    st.dataframe(class_frame, hide_index=True, width="stretch", column_config={
+        "Precision": st.column_config.NumberColumn(format="%.1%%"),
+        "Recall": st.column_config.NumberColumn(format="%.1%%"),
+        "F1": st.column_config.NumberColumn(format="%.1%%"),
+    })
+    predictions = pd.DataFrame(run["predictions"]).rename(columns={
+        "filename": "Image", "actual": "Actual class", "predicted": "Predicted class", "confidence": "Confidence", "correct": "Correct"
+    })
+    predictions["Confidence"] = predictions["Confidence"].map(lambda score: f"{score:.1%}")
+    st.markdown("### Test-set predictions")
+    st.dataframe(predictions, hide_index=True, width="stretch")
+
+    report = {
+        "dataset": {"filename": dataset_name, "classes": run["labels"], "split_seed": settings["seed"]},
+        "training": settings,
+        "model": {"architecture": run["architecture"], "preprocessing": run["preprocessing"]},
+        "test_size": run["test_size"],
+        "test_loss": run["test_loss"],
+        "metrics": run["metrics"],
+        "history": run["history"],
+        "predictions": run["predictions"],
+    }
+    stem = safe_download_stem(Path(dataset_name).stem)
+    st.markdown("### Take your run with you")
+    downloads = st.columns(3)
+    with downloads[0]:
+        st.download_button("Download model weights", model_artifact_bytes(run), file_name=f"{stem}_{run['architecture'].lower()}_model.pt", mime="application/octet-stream", width="stretch", help="State dictionary, class labels, and preprocessing metadata.")
+    with downloads[1]:
+        st.download_button("Download run report", json_bytes(report), file_name=f"{stem}_report.json", mime="application/json", width="stretch")
+    with downloads[2]:
         st.download_button(
-            "Download OCR boxes · CSV",
+            "Download test predictions",
             rows_to_csv(
-                ("text", "confidence", "box_points"),
-                ((line["text"], line["confidence"], json.dumps(line["box"])) for line in lines),
+                ("filename", "actual_class", "predicted_class", "confidence", "correct"),
+                ((p["filename"], p["actual"], p["predicted"], p["confidence"], p["correct"]) for p in run["predictions"]),
             ),
-            file_name=f"{Path(filename).stem}_ocr.csv",
-            mime="text/csv",
-            key="download_ocr_csv",
-            width="stretch",
+            file_name=f"{stem}_test_predictions.csv", mime="text/csv", width="stretch",
         )
 
-
-def render_result(task: str, result: dict[str, Any], filename: str) -> None:
-    if task == TASK_CLASSIFICATION:
-        render_classification(result, filename)
-    elif task == TASK_DETECTION:
-        render_detection(result, filename)
-    elif task == TASK_SEGMENTATION:
-        render_segmentation(result, filename)
-    else:
-        render_ocr(result, filename)
+    st.markdown("### Try your trained model")
+    new_images = st.file_uploader(
+        "Upload new images to classify",
+        type=("jpg", "jpeg", "png", "webp"),
+        accept_multiple_files=True,
+        max_upload_size=5,
+        key=f"vision_new_images_{st.session_state.get(UPLOAD_VERSION_KEY, 0)}",
+        help="Up to 20 images, 5 MB each. Images are processed in session memory.",
+    )
+    uploads = [(file.name, file.getvalue()) for file in (new_images or [])]
+    prediction_payload = run.get("run_signature", "") + "\0" + "".join(name for name, _ in uploads)
+    prediction_signature = hashlib.sha256(prediction_payload.encode() + b"\0" + b"".join(data for _, data in uploads)).hexdigest()
+    saved_signature = st.session_state.get("vision_studio_new_prediction_signature")
+    if prediction_signature != saved_signature:
+        st.session_state.pop("vision_studio_new_predictions", None)
+    if len(uploads) > 20:
+        st.error("Choose no more than 20 images at a time.")
+    elif uploads and st.button("Classify new images", key=f"vision_predict_{st.session_state.get(UPLOAD_VERSION_KEY, 0)}"):
+        try:
+            with st.spinner("Classifying with your trained model…"):
+                new_predictions = predict_images(run, uploads)
+            st.session_state["vision_studio_new_predictions"] = new_predictions
+            st.session_state["vision_studio_new_prediction_signature"] = prediction_signature
+        except DatasetValidationError as exc:
+            st.error(str(exc))
+        except Exception as exc:  # noqa: BLE001 - keep inference errors out of the uploaded-image UI.
+            LOGGER.exception("Prediction failed for the trained model")
+            st.error("The new images could not be classified. Check the app logs and try again.")
+            st.caption(f"Error type: {type(exc).__name__}")
+    new_predictions = st.session_state.get("vision_studio_new_predictions", [])
+    if new_predictions and st.session_state.get("vision_studio_new_prediction_signature") == prediction_signature:
+        st.dataframe(
+            [{"Image": row["filename"], "Predicted class": row["predicted"], "Confidence": f"{row['confidence']:.1%}"} for row in new_predictions],
+            hide_index=True,
+            width="stretch",
+        )
 
 
 def main() -> None:
-    st.set_page_config(
-        page_title="Vision Studio",
-        page_icon="🔎",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
+    st.set_page_config(page_title="Vision Studio · Train", page_icon="👁️", layout="wide", initial_sidebar_state="expanded")
     st.markdown(
         """
         <style>
-        .block-container { max-width: 1220px; padding-top: 2rem; padding-bottom: 4rem; }
-        [data-testid="stSidebar"] { border-right: 1px solid rgba(148, 163, 184, .14); }
-        .hero-kicker { color: #9de6c3; font-size: .78rem; font-weight: 750; letter-spacing: .16em; text-transform: uppercase; }
-        .hero-title { color: #f8fafc; font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 780; letter-spacing: -.055em; line-height: 1.02; margin: .4rem 0 .8rem; }
-        .hero-copy { color: #afbdd0; font-size: 1.08rem; max-width: 720px; line-height: 1.65; }
-        .status-chip { display: inline-block; margin: .8rem .45rem 0 0; padding: .38rem .7rem; border: 1px solid rgba(157,230,195,.2); border-radius: 99px; color: #c9f5df; background: rgba(157,230,195,.07); font-size: .78rem; }
-        div[data-testid="stMetric"] { background: rgba(18,29,46,.8); border: 1px solid rgba(148,163,184,.14); padding: .9rem 1rem; border-radius: 14px; }
-        div[data-testid="stMetricLabel"] { color: #9aabc0; }
-        div[data-testid="stButton"] > button[kind="primary"] { border: 0; color: #07111f; font-weight: 750; }
-        div[data-testid="stAlert"] { border-radius: 12px; }
+        .block-container { max-width: 1280px; padding-top: 2.1rem; padding-bottom: 4rem; }
+        [data-testid="stSidebar"] { border-right: 1px solid rgba(148,163,184,.14); }
+        .eyebrow { color:#9de6c3; font-size:.76rem; font-weight:750; letter-spacing:.16em; text-transform:uppercase; }
+        .hero { color:#f8fafc; font-size:clamp(2.25rem,5vw,3.9rem); font-weight:790; letter-spacing:-.055em; line-height:1.02; margin:.45rem 0 .75rem; }
+        .hero-copy { color:#afbdd0; font-size:1.06rem; max-width:780px; line-height:1.65; }
+        .step-chip { display:inline-block; margin:.9rem .4rem 0 0; padding:.36rem .68rem; border:1px solid rgba(157,230,195,.22); border-radius:99px; color:#c9f5df; background:rgba(157,230,195,.07); font-size:.78rem; }
+        div[data-testid="stMetric"] { background:rgba(18,29,46,.8); border:1px solid rgba(148,163,184,.14); padding:.85rem 1rem; border-radius:14px; }
+        div[data-testid="stMetricLabel"] { color:#9aabc0; }
+        div[data-testid="stButton"] > button[kind="primary"] { border:0; color:#07111f; font-weight:750; }
+        div[data-testid="stAlert"] { border-radius:12px; }
         </style>
         """,
         unsafe_allow_html=True,
     )
-
-    if UPLOAD_VERSION_KEY not in st.session_state:
-        st.session_state[UPLOAD_VERSION_KEY] = 0
-
+    st.session_state.setdefault(UPLOAD_VERSION_KEY, 0)
     with st.sidebar:
-        st.markdown("## 🔎 Vision Studio")
-        st.caption("A guided lab for seeing how computer-vision models interpret images.")
-        st.button("Clear current image and result", on_click=clear_session_upload, width="stretch")
+        st.markdown("## 👁️ Vision Studio")
+        st.caption("A guided workbench for training image classifiers on your own labeled data.")
+        st.button("Clear dataset and results", on_click=clear_workspace, width="stretch")
+        st.divider()
+        st.markdown("### Dataset format")
+        st.code("dataset.zip\n├── cats/\n│   ├── cat_01.jpg\n│   └── ...\n└── dogs/\n    ├── dog_01.jpg\n    └── ...", language=None)
+        st.caption("At least 5 valid images per class · 2–15 classes · 250 images max")
         st.divider()
         st.markdown("### Privacy and runtime")
-        st.info("Images are processed in this app session and are not saved. Models run on CPU; first use may download model weights.")
-        st.caption("Streamlit Community Cloud can sleep when idle and has shared resource limits.")
-        st.markdown("[Source and setup](https://github.com/ShresthSrivastav/computer-vision-demo)")
+        st.info("Your image data stays in this app session's memory. The app does not save uploads or results.")
+        st.caption("CPU training only. Pretrained ImageNet weights download on the first run. Cloud resources are shared and may sleep when idle.")
+        st.markdown("[Source code and setup](https://github.com/ShresthSrivastav/computer-vision-demo)")
 
-    st.markdown('<div class="hero-kicker">A hands-on computer-vision lab</div>', unsafe_allow_html=True)
-    st.markdown('<div class="hero-title">Teach a machine to see.</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="hero-copy">Explore image classification, object detection, semantic segmentation, and OCR with compact pretrained models. Try the samples, then bring an image of your own.</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<span class="status-chip">CPU inference</span><span class="status-chip">Open pretrained models</span><span class="status-chip">Session-only images</span>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="eyebrow">Your dataset · Your model · Your evaluation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero">Train a vision model.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-copy">Upload labeled images, choose a pretrained architecture, and train a custom classifier with transfer learning. Vision Studio creates the data split, tracks learning, and evaluates on images the model never trained on.</div>', unsafe_allow_html=True)
+    st.markdown('<span class="step-chip">01 · Upload data</span><span class="step-chip">02 · Choose a model</span><span class="step-chip">03 · Train & evaluate</span><span class="step-chip">CPU only</span>', unsafe_allow_html=True)
     st.write("")
 
-    task = st.radio(
-        "Choose a vision lab",
-        (TASK_CLASSIFICATION, TASK_DETECTION, TASK_SEGMENTATION, TASK_OCR),
-        horizontal=True,
-        label_visibility="collapsed",
-        key="vision_task",
+    st.markdown("## 1 · Add your image dataset")
+    st.write("Upload a ZIP with one folder per class. An optional outer folder is fine. Images can be JPEG, PNG, or WebP.")
+    version = st.session_state[UPLOAD_VERSION_KEY]
+    uploaded = st.file_uploader(
+        "Dataset ZIP",
+        type=("zip",),
+        max_upload_size=25,
+        key=f"vision_dataset_upload_{version}",
+        help="Maximum 25 MB compressed, 80 MB uncompressed, and 250 images. Images are kept in session memory only.",
     )
-    st.markdown(f"### {task}")
-    st.write(TASK_DESCRIPTIONS[task])
-
-    image, raw, filename, source_note = load_source_image()
-    settings: dict[str, Any] = {}
-    if task == TASK_CLASSIFICATION:
-        settings["top_k"] = st.select_slider("Show top predictions", options=(3, 5, 10), value=5)
-    elif task == TASK_DETECTION:
-        settings["threshold"] = st.slider("Minimum confidence", 0.10, 0.90, 0.55, 0.05, format="%.2f")
-
-    if image is None:
-        st.session_state.pop(RESULT_KEY, None)
-        if source_note and source_note != "Choose an image to begin.":
-            st.error(source_note)
-        else:
-            st.info(source_note)
-        return
-
-    signature = result_signature(task, raw, settings)
-    current_result = st.session_state.get(RESULT_KEY)
-    if current_result and current_result.get("signature") != signature:
-        st.session_state.pop(RESULT_KEY, None)
-    left, right = st.columns([1.05, 1], gap="large")
-    with left:
-        st.image(image, caption=f"{filename} · {image.width:,} × {image.height:,}", width="stretch")
-        st.caption(source_note)
-    with right:
-        st.markdown("#### What this model does")
-        st.write(
-            {
-                TASK_CLASSIFICATION: "Rank likely labels for the full image.",
-                TASK_DETECTION: "Locate objects and show their confidence and coordinates.",
-                TASK_SEGMENTATION: "Color pixels by the scene category predicted for each region.",
-                TASK_OCR: "Read printed text and return its location and confidence.",
-            }[task]
+    if uploaded is not None:
+        set_dataset(uploaded.getvalue(), uploaded.name)
+    elif DATASET_KEY not in st.session_state:
+        st.download_button(
+            "Download a tiny example dataset",
+            demo_dataset_zip(),
+            file_name="vision_studio_shapes.zip",
+            mime="application/zip",
+            help="A small synthetic circles-versus-triangles dataset for exploring the workflow.",
         )
-        st.markdown("#### Model notes")
-        if task == TASK_CLASSIFICATION:
-            st.caption("MobileNetV3-Small · ImageNet-1K · 1,000 categories · optimized for mobile inference.")
-        elif task == TASK_DETECTION:
-            st.caption("Faster R-CNN with MobileNetV3-Large · COCO · 80 object categories · low-resolution variant for CPU use.")
-        elif task == TASK_SEGMENTATION:
-            st.caption("LRASPP with MobileNetV3-Large · COCO/VOC labels · 20 foreground categories plus background.")
-        else:
-            st.caption("RapidOCR PP-OCRv6 small · printed text recognition · Latin and CJK text may be detected.")
-        run = st.button("Run analysis", type="primary", width="stretch")
 
-    if run:
+    if ERROR_KEY in st.session_state:
+        st.error(st.session_state[ERROR_KEY])
+    dataset = st.session_state.get(DATASET_KEY)
+    if not dataset:
+        st.info("After uploading a dataset, its class balance and training settings will appear here.")
+        st.stop()
+
+    counts = dataset["class_counts"]
+    image_count = len(dataset["images"])
+    split = split_dataset(dataset["images"])
+    current_signature = st.session_state.get("vision_studio_dataset_signature")
+
+    summary = st.columns(3)
+    summary[0].metric("Images ready", f"{image_count:,}")
+    summary[1].metric("Classes", len(counts))
+    summary[2].metric("Train / validation / test", f"{len(split['train'])} / {len(split['validation'])} / {len(split['test'])}")
+    left, right = st.columns([1.1, 1], gap="large")
+    with left:
+        st.markdown("### Images per class")
+        st.bar_chart(pd.Series(counts, name="Images"), y_label="Images")
+    with right:
+        st.markdown("### Automatic stratified split")
+        st.dataframe(
+            [{"Split": name.title(), "Images": len(split[name]), "Share": f"{len(split[name]) / image_count:.0%}"} for name in ("train", "validation", "test")],
+            hide_index=True,
+            width="stretch",
+        )
+        st.caption("Every class is represented in all three splits. Test images remain held out until final evaluation.")
+    if dataset["warnings"]:
+        with st.expander(f"Skipped files ({len(dataset['warnings'])}{'+' if len(dataset['warnings']) == 3 else ''})"):
+            for warning in dataset["warnings"]:
+                st.caption(warning)
+
+    st.divider()
+    st.markdown("## 2 · Choose and configure a model")
+    model_columns = st.columns([1.1, 1.1, .8, 1])
+    with model_columns[0]:
+        architecture = st.selectbox("Architecture", ARCHITECTURES, help="Both options start from TorchVision ImageNet weights and train a new classification head.")
+    with model_columns[1]:
+        epochs = st.slider("Epochs", 1, 6, 3, help="An epoch is one pass through the training split. The best checkpoint is selected by validation loss.")
+    with model_columns[2]:
+        batch_size = st.selectbox("Batch size", (4, 8, 16), index=1)
+    with model_columns[3]:
+        learning_rate = st.select_slider("Learning rate", options=(0.0001, 0.0003, 0.001, 0.003, 0.01), value=0.001, format_func=lambda value: f"{value:g}")
+    st.caption(
+        "MobileNetV3-Small is lighter and faster on CPU. ResNet18 is a larger classic baseline. "
+        "The pretrained feature extractor stays frozen; only the new class head is trained."
+    )
+    settings = {"architecture": architecture, "epochs": epochs, "batch_size": batch_size, "learning_rate": learning_rate, "seed": 42}
+    run_signature = hashlib.sha256(json.dumps({"dataset": current_signature, "settings": settings}, sort_keys=True).encode()).hexdigest()
+    train_clicked = st.button("Train model", type="primary", width="stretch", key="train_vision_model")
+    if train_clicked:
+        st.session_state.pop(RESULT_KEY, None)
+        progress = st.progress(0, text="Preparing the model and dataset…")
+        status = st.empty()
         started = time.perf_counter()
+
+        def on_epoch(epoch: int, total: int, row: dict[str, float]) -> None:
+            progress.progress(epoch / total, text=f"Training · epoch {epoch} of {total}")
+            status.caption(
+                f"Train accuracy {row['train_accuracy']:.1%} · validation accuracy {row['validation_accuracy']:.1%} · "
+                f"validation loss {row['validation_loss']:.3f}"
+            )
+
         try:
-            with st.spinner("Loading the model and analyzing this image on CPU…"):
-                bundle = cached_model(task)
-                result = run_task(task, bundle, image, settings)
-            st.session_state[RESULT_KEY] = {
-                "signature": signature,
-                "task": task,
-                "filename": filename,
-                "result": result,
-                "elapsed": time.perf_counter() - started,
-            }
-        except Exception as exc:  # noqa: BLE001 - keep user-facing errors clear and log diagnostics.
-            LOGGER.exception("Inference failed for task %s", task)
-            st.error("This model could not finish the analysis. Check the app logs, then retry; model weights may still be downloading on first use.")
+            with st.spinner("Loading ImageNet weights if needed, then training on CPU…"):
+                run = train_classifier(
+                    dataset["images"], split, architecture,
+                    epochs=epochs, batch_size=batch_size, learning_rate=learning_rate, on_epoch=on_epoch,
+                )
+            run["elapsed"] = time.perf_counter() - started
+            run["test_size"] = len(split["test"])
+            run["run_signature"] = run_signature
+            st.session_state[RESULT_KEY] = run
+            st.session_state["vision_studio_training_signature"] = run_signature
+            st.session_state["vision_studio_training_settings"] = settings
+            progress.progress(1.0, text="Training and test evaluation complete")
+            status.empty()
+        except Exception as exc:  # noqa: BLE001 - log details without exposing uploaded content.
+            LOGGER.exception("Training failed for %s", architecture)
+            st.error("Training could not complete. Check the app logs; the first run may need time to download model weights.")
             st.caption(f"Error type: {type(exc).__name__}")
 
-    saved = st.session_state.get(RESULT_KEY)
-    if saved and saved.get("signature") == signature:
-        st.divider()
-        left, right = st.columns([1, 5])
-        with left:
-            st.metric("Run time", f"{saved['elapsed']:.2f}s")
-        with right:
-            st.caption("Total time includes loading a model the first time it is used in this app session.")
-        render_result(task, saved["result"], safe_download_stem(filename))
+    run = st.session_state.get(RESULT_KEY)
+    if run and st.session_state.get("vision_studio_training_signature") == run_signature:
+        render_results(run, st.session_state["vision_studio_training_settings"], st.session_state["vision_studio_dataset_name"])
     else:
         st.divider()
-        st.markdown("#### Your result will appear here")
-        st.caption("Choose a sample or upload an image, then run the model. Only the selected task is loaded.")
+        st.markdown("## 3 · Train, inspect, and export")
+        if run:
+            st.info("The model settings changed. Train again to see results for this configuration.")
+        else:
+            st.caption("Your evaluation metrics, learning curves, confusion matrix, predictions, and downloadable model appear here after training.")
 
-    with st.expander("Learning notes and limitations"):
+    with st.expander("How to read the results"):
         st.markdown(
             """
-            - **Classification** ranks one whole image against ImageNet labels. It does not explain where an object appears.
-            - **Detection** returns boxes for familiar COCO classes. Small, overlapping, or unusual objects may be missed.
-            - **Segmentation** assigns scene pixels to a compact VOC label set. The overlay is a model prediction, not a measured ground truth.
-            - **OCR** reads printed text and shows box-level scores. Handwriting, perspective, glare, and low resolution can reduce accuracy.
-
-            Confidence is a model score, not a guarantee. These examples are for learning and are not appropriate for safety-critical decisions.
+            - **Training split** updates the new classifier head. **Validation split** selects the best epoch. **Test split** is used once for final metrics.
+            - **Accuracy** is the fraction correct. **Balanced accuracy** and **macro F1** give each class equal weight, which helps reveal weak classes in an imbalanced dataset.
+            - The displayed class confidence is a softmax score, not a calibrated probability or a guarantee.
+            - These small CPU runs are for learning and prototyping. A tiny dataset, label noise, or a domain unlike ImageNet can produce misleadingly high or low scores. Use a larger independent dataset before making real-world decisions.
+            - The exported `.pt` file contains a PyTorch state dictionary, class labels, and preprocessing metadata. It does not contain the uploaded images.
             """
         )
 
