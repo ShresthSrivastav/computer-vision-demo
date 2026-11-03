@@ -31,6 +31,11 @@ RESULT_KEY = "vision_studio_training_result"
 UPLOAD_VERSION_KEY = "vision_studio_upload_version"
 
 
+@st.cache_data(max_entries=1, show_spinner=False)
+def example_dataset_zip() -> bytes:
+    return demo_dataset_zip()
+
+
 def clear_workspace() -> None:
     version = int(st.session_state.get(UPLOAD_VERSION_KEY, 0)) + 1
     for key in (
@@ -228,18 +233,28 @@ def main() -> None:
         set_dataset(uploaded.getvalue(), uploaded.name)
     elif DATASET_KEY not in st.session_state:
         st.download_button(
-            "Download a tiny example dataset",
-            demo_dataset_zip(),
+            "Download the 200-image example dataset",
+            example_dataset_zip(),
             file_name="vision_studio_shapes.zip",
             mime="application/zip",
-            help="A small synthetic circles-versus-triangles dataset for exploring the workflow.",
+            help="A balanced synthetic dataset with 5 shape classes and 40 images per class. It fits the upload limits.",
         )
+
+    st.markdown("## 2 · Choose your model")
+    architecture = st.radio(
+        "Model architecture",
+        ARCHITECTURES,
+        horizontal=True,
+        key="vision_architecture",
+        help="Choose a pretrained image feature extractor. Vision Studio trains a new classification head for your labels.",
+    )
+    st.caption("MobileNetV3-Small is lighter and faster on CPU. ResNet18 is a larger classic baseline.")
 
     if ERROR_KEY in st.session_state:
         st.error(st.session_state[ERROR_KEY])
     dataset = st.session_state.get(DATASET_KEY)
     if not dataset:
-        st.info("After uploading a dataset, its class balance and training settings will appear here.")
+        st.info("Your model is selected. Upload a valid ZIP above to see the class balance, configure training, and start the run.")
         st.stop()
 
     counts = dataset["class_counts"]
@@ -269,19 +284,16 @@ def main() -> None:
                 st.caption(warning)
 
     st.divider()
-    st.markdown("## 2 · Choose and configure a model")
-    model_columns = st.columns([1.1, 1.1, .8, 1])
+    st.markdown("## 3 · Configure training")
+    model_columns = st.columns([1.1, .8, 1])
     with model_columns[0]:
-        architecture = st.selectbox("Architecture", ARCHITECTURES, help="Both options start from TorchVision ImageNet weights and train a new classification head.")
-    with model_columns[1]:
         epochs = st.slider("Epochs", 1, 6, 3, help="An epoch is one pass through the training split. The best checkpoint is selected by validation loss.")
-    with model_columns[2]:
+    with model_columns[1]:
         batch_size = st.selectbox("Batch size", (4, 8, 16), index=1)
-    with model_columns[3]:
+    with model_columns[2]:
         learning_rate = st.select_slider("Learning rate", options=(0.0001, 0.0003, 0.001, 0.003, 0.01), value=0.001, format_func=lambda value: f"{value:g}")
     st.caption(
-        "MobileNetV3-Small is lighter and faster on CPU. ResNet18 is a larger classic baseline. "
-        "The pretrained feature extractor stays frozen; only the new class head is trained."
+        "Both models start from TorchVision ImageNet weights. The pretrained feature extractor stays frozen; only the new class head is trained."
     )
     settings = {"architecture": architecture, "epochs": epochs, "batch_size": batch_size, "learning_rate": learning_rate, "seed": 42}
     run_signature = hashlib.sha256(json.dumps({"dataset": current_signature, "settings": settings}, sort_keys=True).encode()).hexdigest()
@@ -323,7 +335,7 @@ def main() -> None:
         render_results(run, st.session_state["vision_studio_training_settings"], st.session_state["vision_studio_dataset_name"])
     else:
         st.divider()
-        st.markdown("## 3 · Train, inspect, and export")
+        st.markdown("## 4 · Train, inspect, and export")
         if run:
             st.info("The model settings changed. Train again to see results for this configuration.")
         else:

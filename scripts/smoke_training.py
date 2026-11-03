@@ -19,7 +19,7 @@ def main() -> None:
         batch_size=4,
         learning_rate=0.001,
     )
-    assert len(result["labels"]) == 2
+    assert len(result["labels"]) == 5
     assert len(result["history"]) == 1
     assert len(result["predictions"]) == len(splits["test"])
     assert 0 <= result["metrics"]["accuracy"] <= 1

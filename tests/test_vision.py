@@ -92,9 +92,11 @@ class DatasetArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(DatasetValidationError, "at least 5"):
             parse_dataset_zip(output.getvalue())
 
-    def test_demo_zip_is_a_valid_two_class_dataset(self) -> None:
+    def test_demo_zip_is_a_valid_200_image_five_class_dataset(self) -> None:
         dataset = parse_dataset_zip(demo_dataset_zip())
-        self.assertEqual(dataset["class_counts"], {"circle": 10, "triangle": 10})
+        self.assertEqual(dataset["class_counts"], {
+            "circle": 40, "diamond": 40, "square": 40, "star": 40, "triangle": 40,
+        })
 
 
 class ImageAndSplitTests(unittest.TestCase):

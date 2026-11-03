@@ -469,28 +469,48 @@ def safe_download_stem(filename: str) -> str:
 
 
 def demo_dataset_zip() -> bytes:
-    """Build a tiny two-class dataset so visitors can try the whole workflow immediately."""
+    """Build a balanced 200-image synthetic dataset for an end-to-end demo run."""
     import math
 
     rng = random.Random(9)
+    palettes = {
+        "circle": (37, 119, 204),
+        "triangle": (220, 91, 65),
+        "square": (55, 155, 105),
+        "star": (196, 145, 41),
+        "diamond": (137, 94, 184),
+    }
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for label in ("circle", "triangle"):
-            for index in range(10):
-                image = Image.new("RGB", (160, 160), (238 + rng.randrange(0, 15), 241, 245))
+        archive.writestr(
+            "vision_studio_shapes/README.txt",
+            "Synthetic learning sample: 40 images each of circle, triangle, square, star, and diamond. Generated for Vision Studio; not a real-world photo dataset.\n",
+        )
+        for label, sides in (("circle", 0), ("triangle", 3), ("square", 4), ("star", 10), ("diamond", 4)):
+            for index in range(40):
+                base = rng.randrange(238, 253)
+                image = Image.new("RGB", (160, 160), (base, min(255, base + 1), min(255, base + 3)))
                 draw = ImageDraw.Draw(image)
                 center_x, center_y = 80 + rng.randrange(-18, 19), 80 + rng.randrange(-18, 19)
                 radius = rng.randrange(28, 50)
-                color = (31, 130 + rng.randrange(0, 70), 178 + rng.randrange(0, 60)) if label == "circle" else (205 + rng.randrange(0, 40), 86, 68)
+                base_color = palettes[label]
+                color = tuple(max(0, min(255, channel + rng.randrange(-24, 25))) for channel in base_color)
                 if label == "circle":
                     draw.ellipse((center_x - radius, center_y - radius, center_x + radius, center_y + radius), fill=color)
                 else:
-                    points = [
-                        (center_x + radius * math.cos(angle), center_y + radius * math.sin(angle))
-                        for angle in (-math.pi / 2, math.pi / 6, 5 * math.pi / 6)
-                    ]
+                    if label == "square":
+                        rotation = rng.uniform(-0.15, 0.15)
+                    elif label == "diamond":
+                        rotation = math.pi / 4 + rng.uniform(-0.15, 0.15)
+                    else:
+                        rotation = rng.uniform(-math.pi, math.pi)
+                    points = []
+                    for point in range(sides):
+                        angle = rotation + point * 2 * math.pi / sides
+                        point_radius = radius if label != "star" or point % 2 == 0 else radius * 0.45
+                        points.append((center_x + point_radius * math.cos(angle), center_y + point_radius * math.sin(angle)))
                     draw.polygon(points, fill=color)
                 image_bytes = io.BytesIO()
                 image.save(image_bytes, format="JPEG", quality=88)
-                archive.writestr(f"shapes/{label}/{label}_{index + 1:02d}.jpg", image_bytes.getvalue())
+                archive.writestr(f"vision_studio_shapes/{label}/{label}_{index + 1:02d}.jpg", image_bytes.getvalue())
     return output.getvalue()
