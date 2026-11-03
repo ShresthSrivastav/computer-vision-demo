@@ -46,6 +46,15 @@ class DatasetArchiveTests(unittest.TestCase):
                 self.assertEqual(dataset["class_counts"], {"cats": 6, "dogs": 6})
                 self.assertEqual(len(dataset["images"]), 12)
 
+    def test_accepts_more_than_250_images(self) -> None:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for label in ("cats", "dogs"):
+                for index in range(150):
+                    archive.writestr(f"{label}/{label}_{index}.jpg", image_bytes())
+        dataset = parse_dataset_zip(output.getvalue())
+        self.assertEqual(len(dataset["images"]), 300)
+
     def test_skips_corrupt_images_with_clear_warning(self) -> None:
         parsed = parse_dataset_zip(dataset_zip(invalid=True))
         self.assertEqual(len(parsed["images"]), 10)

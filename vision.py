@@ -19,8 +19,7 @@ MAX_DATASET_BYTES = 50 * 1024 * 1024
 MAX_UNPACKED_BYTES = 80 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_PIXELS = 12_000_000
-MAX_ZIP_ENTRIES = 1_000
-MAX_IMAGES = 250
+MAX_ZIP_ENTRIES = 10_000
 MAX_CLASSES = 15
 MIN_IMAGES_PER_CLASS = 5
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -101,8 +100,6 @@ def parse_dataset_zip(data: bytes) -> dict[str, Any]:
 
         if not candidates:
             raise DatasetValidationError("No JPEG, PNG, or WebP images were found in the ZIP.")
-        if len(candidates) > MAX_IMAGES:
-            raise DatasetValidationError(f"The ZIP has too many images (maximum {MAX_IMAGES}).")
         if any(parts[0].casefold() in SPLIT_NAMES for _, parts in candidates):
             raise DatasetValidationError(
                 "Upload one labeled dataset, not pre-split train/validation/test folders. "

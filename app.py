@@ -206,7 +206,7 @@ def main() -> None:
         st.divider()
         st.markdown("### Dataset format")
         st.code("dataset.zip\n├── cats/\n│   ├── cat_01.jpg\n│   └── ...\n└── dogs/\n    ├── dog_01.jpg\n    └── ...", language=None)
-        st.caption("At least 5 valid images per class · 2–15 classes · 250 images max")
+        st.caption("At least 5 valid images per class · 2–15 classes · no fixed image-count cap")
         st.divider()
         st.markdown("### Privacy and runtime")
         st.info("Your image data stays in this app session's memory. The app does not save uploads or results.")
@@ -227,7 +227,7 @@ def main() -> None:
         type=("zip",),
         max_upload_size=50,
         key=f"vision_dataset_upload_{version}",
-        help="Maximum 50 MB compressed, 80 MB uncompressed, and 250 images. Images are kept in session memory only.",
+        help="Maximum 50 MB compressed and 80 MB uncompressed. No fixed image-count cap; a 10,000-entry archive safety cap applies. Images stay in session memory.",
     )
     if uploaded is not None:
         set_dataset(uploaded.getvalue(), uploaded.name)

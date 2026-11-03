@@ -26,7 +26,7 @@ dataset.zip
     └── ...
 ```
 
-JPEG, PNG, and WebP are accepted. Each archive needs 2–15 classes, at least 5 valid images per class, and no more than 250 images total. The upload is limited to 50 MB compressed, 80 MB uncompressed, and 5 MB per image (12 million pixels per image). Do not upload pre-made `train`, `validation`, or `test` directories; the app creates a deterministic, stratified 70/15/15 split so every class appears in each split. Corrupt images are skipped and listed.
+JPEG, PNG, and WebP are accepted. Each archive needs 2–15 classes and at least 5 valid images per class. There is no fixed image-count cap; the ZIP is limited to 50 MB compressed, 80 MB uncompressed, and 10,000 entries for archive safety. Each image is limited to 5 MB and 12 million pixels. Do not upload pre-made `train`, `validation`, or `test` directories; the app creates a deterministic, stratified 70/15/15 split so every class appears in each split. Corrupt images are skipped and listed. CPU time and session memory are the practical limits for large datasets.
 
 The included **Download the 200-image example dataset** action creates a balanced synthetic ZIP with five shape classes and 40 images per class. It is useful for checking the workflow, but is not a real-world photo benchmark.
 
