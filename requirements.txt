@@ -1,0 +1,10 @@
+--find-links https://download.pytorch.org/whl/cpu/torch/
+--find-links https://download.pytorch.org/whl/cpu/torchvision/
+
+streamlit==1.66.1
+torch==2.14.1+cpu
+torchvision==0.29.1+cpu
+rapidocr==3.10.0
+onnxruntime==1.31.1
+Pillow==12.1.0
+numpy==2.5.4
