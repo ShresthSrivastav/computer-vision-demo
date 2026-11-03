@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 
-MAX_DATASET_BYTES = 25 * 1024 * 1024
+MAX_DATASET_BYTES = 50 * 1024 * 1024
 MAX_UNPACKED_BYTES = 80 * 1024 * 1024
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGE_PIXELS = 12_000_000
@@ -63,7 +63,7 @@ def parse_dataset_zip(data: bytes) -> dict[str, Any]:
     if not data:
         raise DatasetValidationError("Choose a ZIP file to continue.")
     if len(data) > MAX_DATASET_BYTES:
-        raise DatasetValidationError("The ZIP exceeds the 25 MB upload limit.")
+        raise DatasetValidationError("The ZIP exceeds the 50 MB upload limit.")
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except (zipfile.BadZipFile, OSError) as exc:

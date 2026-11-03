@@ -225,9 +225,9 @@ def main() -> None:
     uploaded = st.file_uploader(
         "Dataset ZIP",
         type=("zip",),
-        max_upload_size=25,
+        max_upload_size=50,
         key=f"vision_dataset_upload_{version}",
-        help="Maximum 25 MB compressed, 80 MB uncompressed, and 250 images. Images are kept in session memory only.",
+        help="Maximum 50 MB compressed, 80 MB uncompressed, and 250 images. Images are kept in session memory only.",
     )
     if uploaded is not None:
         set_dataset(uploaded.getvalue(), uploaded.name)

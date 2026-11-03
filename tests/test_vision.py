@@ -57,8 +57,8 @@ class DatasetArchiveTests(unittest.TestCase):
             parse_dataset_zip(b"")
         with self.assertRaisesRegex(DatasetValidationError, "readable ZIP"):
             parse_dataset_zip(b"not a zip")
-        with self.assertRaisesRegex(DatasetValidationError, "25 MB"):
-            parse_dataset_zip(b"x" * (25 * 1024 * 1024 + 1))
+        with self.assertRaisesRegex(DatasetValidationError, "50 MB"):
+            parse_dataset_zip(b"x" * (50 * 1024 * 1024 + 1))
 
     def test_rejects_too_much_uncompressed_data(self) -> None:
         output = io.BytesIO()
